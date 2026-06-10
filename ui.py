@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class SettingsWindow(QWidget):
+    monitoring_toggled = Signal(bool)
+    add_folder_requested = Signal()
+    remove_folder_requested = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Ingestion Monitor")
+        self.resize(640, 460)
+
+        self.title_label = QLabel("Directory Ingestion")
+        self.title_label.setStyleSheet("font-size: 24px; font-weight: 600;")
+
+        self.subtitle_label = QLabel("Monitor folders in the background from the system tray.")
+        self.subtitle_label.setStyleSheet("color: #667085;")
+
+        self.monitor_toggle = QCheckBox("Background monitoring enabled")
+        self.monitor_toggle.toggled.connect(self.monitoring_toggled)
+        self.monitor_toggle.setStyleSheet(
+            "QCheckBox { font-size: 15px; font-weight: 600; padding: 6px 0; }"
+        )
+
+        self.status_label = QLabel("Ready")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #344054;")
+
+        directory_card = QFrame()
+        directory_card.setFrameShape(QFrame.Shape.StyledPanel)
+        directory_card.setStyleSheet(
+            "QFrame { border: 1px solid #d0d5dd; border-radius: 14px; background: #ffffff; }"
+        )
+
+        directory_layout = QVBoxLayout(directory_card)
+        directory_layout.setContentsMargins(16, 16, 16, 16)
+        directory_layout.setSpacing(12)
+
+        directory_title = QLabel("Monitored folders")
+        directory_title.setStyleSheet("font-size: 16px; font-weight: 600;")
+
+        self.directory_list = QListWidget()
+        self.directory_list.currentItemChanged.connect(self._update_remove_button_state)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+
+        self.add_button = QPushButton("Add Folder")
+        self.add_button.clicked.connect(self._emit_add_requested)
+        self.remove_button = QPushButton("Remove Folder")
+        self.remove_button.clicked.connect(self._emit_remove_selected)
+        self.remove_button.setEnabled(False)
+
+        button_row.addWidget(self.add_button)
+        button_row.addWidget(self.remove_button)
+        button_row.addStretch(1)
+
+        directory_layout.addWidget(directory_title)
+        directory_layout.addWidget(self.directory_list)
+        directory_layout.addLayout(button_row)
+
+        activity_title = QLabel("Recent activity")
+        activity_title.setStyleSheet("font-size: 16px; font-weight: 600;")
+
+        self.activity_list = QListWidget()
+        self.activity_list.setMaximumHeight(140)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.subtitle_label)
+        layout.addWidget(self.monitor_toggle)
+        layout.addWidget(self.status_label)
+        layout.addWidget(directory_card, 1)
+        layout.addWidget(activity_title)
+        layout.addWidget(self.activity_list)
+
+        self.setStyleSheet(
+            "QWidget { background: #f8fafc; color: #101828; }"
+            "QPushButton { background: #101828; color: white; border-radius: 10px; padding: 10px 14px; }"
+            "QPushButton:disabled { background: #98a2b3; }"
+            "QListWidget { border: 1px solid #d0d5dd; border-radius: 10px; background: white; padding: 4px; }"
+        )
+
+    def set_monitoring_active(self, is_active: bool) -> None:
+        previous = self.monitor_toggle.blockSignals(True)
+        self.monitor_toggle.setChecked(is_active)
+        self.monitor_toggle.blockSignals(previous)
+
+    def set_directories(self, directories: list[str], invalid_directories: set[str]) -> None:
+        self.directory_list.clear()
+        for directory in directories:
+            label = directory
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, directory)
+            if directory in invalid_directories:
+                item.setForeground(QColor("#b42318"))
+                item.setToolTip("Directory does not currently exist and is not being watched.")
+            self.directory_list.addItem(item)
+        self._update_remove_button_state()
+
+    def set_status_message(self, message: str, *, is_error: bool = False) -> None:
+        self.status_label.setText(message)
+        color = "#b42318" if is_error else "#344054"
+        self.status_label.setStyleSheet(f"color: {color};")
+
+    def append_activity(self, message: str) -> None:
+        self.activity_list.insertItem(0, message)
+        while self.activity_list.count() > 50:
+            self.activity_list.takeItem(self.activity_list.count() - 1)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        event.ignore()
+        self.hide()
+
+    def _emit_add_requested(self, _checked: bool = False) -> None:
+        self.add_folder_requested.emit()
+
+    def _emit_remove_selected(self, _checked: bool = False) -> None:
+        item = self.directory_list.currentItem()
+        if item is None:
+            return
+        directory = item.data(Qt.ItemDataRole.UserRole)
+        self.remove_folder_requested.emit(directory)
+
+    def _update_remove_button_state(self, *_args) -> None:
+        self.remove_button.setEnabled(self.directory_list.currentItem() is not None)
