@@ -39,6 +39,7 @@ class TrayController(QObject):
     """
 
     queue_upload = Signal(str, str, str, str, str)
+    queue_changed = Signal(int)
     notification_open_requested = Signal()
     upload_environment_updated = Signal(object)
     upload_environment_cleared = Signal()
@@ -57,7 +58,7 @@ class TrayController(QObject):
         self.environment = self.irods_environment_store.load()
         self.monitor = MonitorManager()
         self.window = SettingsWindow()
-        self._queued_uploads: dict[str, str] = {}
+        self._queued_uploads: dict[str, float] = {}
         self._is_shutting_down = False
         self._login_dialog: LoginDialog | None = None
         self._show_window_after_login = False
@@ -331,6 +332,7 @@ class TrayController(QObject):
 
         self._is_authenticated = False
         self._queued_uploads.clear()
+        self.queue_changed.emit(0)
         self.upload_environment_cleared.emit()
         self.environment = self.irods_environment_store.load()
         self.window.set_irods_environment(self.environment)
@@ -377,6 +379,7 @@ class TrayController(QObject):
         self.window.save_irods_requested.connect(self.save_irods_settings)
         self.window.monitoring_toggled.connect(self.set_monitoring_active)
         self.notification_open_requested.connect(self.show_window)
+        self.queue_changed.connect(self.window.set_queue_count)
         self.monitor.file_event.connect(self._handle_file_event)
         self.monitor.ingest_requested.connect(self._queue_ingestion)
         self.monitor.monitored_directory_renamed.connect(self._handle_monitored_directory_renamed)
@@ -528,11 +531,21 @@ class TrayController(QObject):
             self.window.set_status_message(message, is_error=True)
             self.window.append_activity(f"warning: {message}")
             return
-        if normalized_path in self._queued_uploads:
+        try:
+            modified_time = Path(normalized_path).stat().st_mtime
+        except OSError:
+            # File disappeared between the filesystem event and this call.
             return
 
-        self._queued_uploads[normalized_path] = monitored_directory.source_directory
+        if normalized_path in self._queued_uploads:
+            # Already waiting: record newer modification time so upload uses
+            # current contents but do not queue same file twice
+            self._queued_uploads[normalized_path] = modified_time
+            return
+
+        self._queued_uploads[normalized_path] = modified_time
         self.window.append_activity(f"queued upload -> {normalized_path}")
+        self.queue_changed.emit(len(self._queued_uploads))
         self.queue_upload.emit(
             normalized_path,
             monitored_directory.source_directory,
@@ -566,7 +579,7 @@ class TrayController(QObject):
 
     def _handle_monitored_directory_moved(self, old_path: str, new_path: str) -> None:
         """Refresh the UI and notify the user when a watched folder leaves its parent."""
-        
+
         print(
             "[tray] handle monitored directory moved "
             f"old_path={old_path} ",
@@ -593,7 +606,7 @@ class TrayController(QObject):
 
     def _handle_monitored_directory_deleted(self, path: str) -> None:
         """Refresh the UI when a watched folder is deleted and can no longer be read."""
-        
+
         print(
             "[tray] handle monitored directory deleted "
             f"path={path} ",
@@ -652,7 +665,7 @@ class TrayController(QObject):
     def _handle_upload_finished(self, local_path: str, logical_path: str) -> None:
         """Clear queue tracking and log successful background uploads."""
 
-        self._queued_uploads.pop(local_path, None)
+        self._forget_queued_upload(local_path)
         self.window.set_status_message(f"Uploaded {Path(local_path).name} to iRODS.")
         self.window.append_activity(f"uploaded -> {local_path} to {logical_path}")
 
@@ -665,15 +678,21 @@ class TrayController(QObject):
     def _handle_upload_failed(self, local_path: str, message: str) -> None:
         """Clear queue tracking and surface upload failures to the user."""
 
-        self._queued_uploads.pop(local_path, None)
+        self._forget_queued_upload(local_path)
         self.window.set_status_message(message, is_error=True)
         self.window.append_activity(f"upload failed: {local_path} ({message})")
 
     def _handle_upload_cancelled(self, local_path: str, message: str) -> None:
         """Drop queued uploads cleanly once a monitored folder becomes unavailable."""
 
-        self._queued_uploads.pop(local_path, None)
+        self._forget_queued_upload(local_path)
         self.window.append_activity(f"upload cancelled: {local_path} ({message})")
+
+    def _forget_queued_upload(self, local_path: str) -> None:
+        """Drop a finished, failed, or cancelled upload and republish the queue size."""
+
+        self._queued_uploads.pop(local_path, None)
+        self.queue_changed.emit(len(self._queued_uploads))
 
     def _match_monitored_directory(self, path: str) -> MonitoredDirectory | None:
         """Return the configured watch root that contains the given file path."""

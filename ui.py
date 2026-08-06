@@ -852,6 +852,10 @@ class SettingsWindow(QWidget):
         self.status_label.setWordWrap(True)
         self.status_label.setObjectName("settingsStatusLabel")
 
+        self.queue_label = QLabel()
+        self.queue_label.setObjectName("queueCountLabel")
+        self.queue_label.hide()
+
         irods_card = QFrame()
         irods_card.setFrameShape(QFrame.Shape.StyledPanel)
         irods_card.setObjectName("irodsCard")
@@ -936,6 +940,7 @@ class SettingsWindow(QWidget):
         layout.addWidget(self.subtitle_label)
         layout.addWidget(self.monitor_toggle)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.queue_label)
         layout.addWidget(irods_card)
         layout.addWidget(directory_card, 1)
         layout.addWidget(activity_title)
@@ -1010,6 +1015,17 @@ class SettingsWindow(QWidget):
 
         self.status_label.setText(message)
         _set_label_error_state(self.status_label, is_error)
+
+    def set_queue_count(self, count: int) -> None:
+        """Show how much work is waiting, and stay out of the way when idle."""
+
+        if count <= 0:
+            self.queue_label.hide()
+            return
+
+        file_noun = "file" if count == 1 else "files"
+        self.queue_label.setText(f"{count} {file_noun} in the upload queue")
+        self.queue_label.show()
 
     def append_activity(self, message: str) -> None:
         """Prepend a new activity message and keep only a short rolling history."""

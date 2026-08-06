@@ -26,6 +26,11 @@ QLabel#settingsStatusLabel {
 QLabel#settingsStatusLabel[error="true"] {
     color: $error;
 }
+QLabel#queueCountLabel {
+    color: $accent;
+    font-size: 13px;
+    font-weight: 600;
+}
 QLabel#validationLabel {
     color: $error;
     font-size: 13px;
