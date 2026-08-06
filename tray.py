@@ -59,6 +59,7 @@ class TrayController(QObject):
         self.monitor = MonitorManager()
         self.window = SettingsWindow()
         self._queued_uploads: dict[str, float] = {}
+        self._in_flight_upload: str | None = None
         self._is_shutting_down = False
         self._login_dialog: LoginDialog | None = None
         self._show_window_after_login = False
@@ -546,13 +547,34 @@ class TrayController(QObject):
         self._queued_uploads[normalized_path] = modified_time
         self.window.append_activity(f"queued upload -> {normalized_path}")
         self.queue_changed.emit(len(self._queued_uploads))
-        self.queue_upload.emit(
-            normalized_path,
-            monitored_directory.source_directory,
-            monitored_directory.target_collection,
-            monitored_directory.post_upload_action,
-            monitored_directory.post_upload_destination,
-        )
+        self._dispatch_next_upload()
+
+    def _dispatch_next_upload(self) -> None:
+        """Hand the oldest waiting file to the worker, one upload at a time."""
+
+        if self._in_flight_upload is not None:
+            return
+
+        dropped_any = False
+        for local_path in list(self._queued_uploads):
+            monitored_directory = self._match_monitored_directory(local_path)
+            if monitored_directory is None or not monitored_directory.target_collection:
+                self._queued_uploads.pop(local_path, None)
+                dropped_any = True
+                continue
+
+            self._in_flight_upload = local_path
+            self.queue_upload.emit(
+                local_path,
+                monitored_directory.source_directory,
+                monitored_directory.target_collection,
+                monitored_directory.post_upload_action,
+                monitored_directory.post_upload_destination,
+            )
+            break
+
+        if dropped_any:
+            self.queue_changed.emit(len(self._queued_uploads))
 
     def _handle_monitor_error(self, message: str) -> None:
         """Surface monitoring failures in both the status area and activity log."""
@@ -689,10 +711,13 @@ class TrayController(QObject):
         self.window.append_activity(f"upload cancelled: {local_path} ({message})")
 
     def _forget_queued_upload(self, local_path: str) -> None:
-        """Drop a finished, failed, or cancelled upload and republish the queue size."""
+        """Retire a finished, failed, or cancelled upload and start the next one."""
 
         self._queued_uploads.pop(local_path, None)
+        if self._in_flight_upload == local_path:
+            self._in_flight_upload = None
         self.queue_changed.emit(len(self._queued_uploads))
+        self._dispatch_next_upload()
 
     def _match_monitored_directory(self, path: str) -> MonitoredDirectory | None:
         """Return the configured watch root that contains the given file path."""
