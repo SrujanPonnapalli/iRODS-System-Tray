@@ -40,6 +40,7 @@ class TrayController(QObject):
 
     queue_upload = Signal(str, str, str, str, str)
     queue_changed = Signal(int)
+    rescan_found = Signal(str)
     notification_open_requested = Signal()
     upload_environment_updated = Signal(object)
     upload_environment_cleared = Signal()
@@ -381,6 +382,7 @@ class TrayController(QObject):
         self.window.monitoring_toggled.connect(self.set_monitoring_active)
         self.notification_open_requested.connect(self.show_window)
         self.queue_changed.connect(self.window.set_queue_count)
+        self.rescan_found.connect(self._queue_ingestion)
         self.monitor.file_event.connect(self._handle_file_event)
         self.monitor.ingest_requested.connect(self._queue_ingestion)
         self.monitor.monitored_directory_renamed.connect(self._handle_monitored_directory_renamed)
@@ -495,6 +497,7 @@ class TrayController(QObject):
             f"signed in as {environment.irods_user_name}@{environment.irods_host}:{environment.irods_port}"
         )
         self._sync_from_config()
+        self._rescan_monitored_directories()
 
     def _without_password(self, environment: IRODSEnvironment) -> IRODSEnvironment:
         """Return an environment snapshot safe to persist to disk."""
@@ -548,6 +551,33 @@ class TrayController(QObject):
         self.window.append_activity(f"queued upload -> {normalized_path}")
         self.queue_changed.emit(len(self._queued_uploads))
         self._dispatch_next_upload()
+
+    def _rescan_monitored_directories(self) -> None:
+        """Queue files that appeared in monitored folders while the app was not running."""
+
+        directories = [
+            (directory.source_directory, directory.recursive)
+            for directory in self.config.monitored_directories
+            if directory.post_upload_action != "keep"
+        ]
+        if not directories:
+            return
+
+        self.window.append_activity(
+            f"rescanning {len(directories)} monitored folder(s) for missed files"
+        )
+        Thread(target=self._run_rescan, args=(directories,), daemon=True).start()
+
+    def _run_rescan(self, directories: list[tuple[str, bool]]) -> None:
+        """Walk monitored folders off the GUI thread, offering each file for ingestion."""
+
+        for source_directory, recursive in directories:
+            root = Path(source_directory)
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*") if recursive else root.glob("*"):
+                if path.is_file():
+                    self.rescan_found.emit(str(path))
 
     def _dispatch_next_upload(self) -> None:
         """Hand the oldest waiting file to the worker, one upload at a time."""
